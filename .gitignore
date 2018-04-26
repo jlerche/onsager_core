@@ -22,5 +22,6 @@ erl_crash.dump
 # Ignore package tarball (built via "mix hex.build").
 onsager_core-*.tar
 
-# ignore .idea directory
+# ignore intellij files
 /.idea/
+onsager_core.iml
