@@ -1,6 +1,6 @@
-# OnsagerCore
+# onsager_core
 
-**TODO: Add description**
+Really, mostly a port of riak_core but using server wide clocks instead of merkle trees as the active anti-entropy method. Mainly a learning experience but who knows might become an actual production ready library :dancer:
 
 ## Installation
 
@@ -18,4 +18,3 @@ end
 Documentation can be generated with [ExDoc](https://github.com/elixir-lang/ex_doc)
 and published on [HexDocs](https://hexdocs.pm). Once published, the docs can
 be found at [https://hexdocs.pm/onsager_core](https://hexdocs.pm/onsager_core).
-

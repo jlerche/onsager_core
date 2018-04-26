@@ -59,4 +59,28 @@ defmodule OnsagerCore.Util do
         []
     end
   end
+
+  # start_app_deps
+  # count
+  # keydelete
+  # multi_keydelete
+  # compose
+  # pmap
+
+  # in case rex is down
+  def safe_rpc(node, module, function, args) do
+    try do
+      :rpc.call(node, module, function, args)
+    catch
+      :exit, {:noproc, _details} -> {:badrpc, :rpc_process_down}
+    end
+  end
+
+  def safe_rpc(node, module, function, args, timeout) do
+    try do
+      :rpc.call(node, module, function, args, timeout)
+    catch
+      :exit, {:noproc, _detauls} -> {:badrpc, :rpc_process_down}
+    end
+  end
 end
