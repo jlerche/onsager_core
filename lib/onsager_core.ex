@@ -1,5 +1,6 @@
 defmodule OnsagerCore do
   alias OnsagerCore.{Util}
+  alias OnsagerCore.Ring
 
   @wait_print_interval 60 * 1000
   @wait_poll_interval 100
@@ -63,7 +64,16 @@ defmodule OnsagerCore do
     end
   end
 
+  defp init_complete({:started, _}) do
+    true
+  end
+
+  defp init_complete(_) do
+    false
+  end
+
   def standard_join(node, ring, rejoin, auto) do
-    #
+    {:ok, my_ring} = Ring.Manager.get_raw_ring()
+    init_complete = init_complete(:init.get_status())
   end
 end
