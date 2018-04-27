@@ -1,6 +1,6 @@
 # onsager_core
 
-Really, mostly a port of riak_core but using server wide clocks instead of merkle trees as the active anti-entropy method. Mainly a learning experience but who knows might become an actual production ready library :dancer:
+Really, mostly a port of riak_core but using server wide clocks instead of merkle trees as the active anti-entropy method. Mainly a learning experience but who knows might become an actual production ready library :dancer:.
 
 ## Installation
 

@@ -1,5 +1,6 @@
 defmodule OnsagerCore do
   alias OnsagerCore.{Util}
+
   @wait_print_interval 60 * 1000
   @wait_poll_interval 100
 
