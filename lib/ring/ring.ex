@@ -1,23 +1,22 @@
 defmodule OnsagerCore.Ring do
-  require Record
+  defmodule OnsagerCore.Ring.CHState do
+    defstruct [
+      :nodename,
+      :vclock,
+      :chring,
+      :meta,
+      :clustername,
+      :next,
+      :members,
+      :claimant,
+      :seen,
+      :rvsn
+    ]
+  end
 
-  Record.defrecord(:chstate, [
-    :nodename,
-    :vclock,
-    :chring,
-    :meta,
-    :clustername,
-    :next,
-    :members,
-    :claimant,
-    :seen,
-    :rvsn
-  ])
-
-  Record.defrecord(:meta_entry, [
-    :value,
-    :lastmod
-  ])
+  defmodule OnsagerCore.Ring.MetaEntry do
+    defstruct [:value, :lastmod]
+  end
 
   def set_tainted(ring) do
     update_meta(:onsager_core_ring_tainted, true, ring)
@@ -25,8 +24,8 @@ defmodule OnsagerCore.Ring do
 
   def update_meta(key, val, state) do
     change =
-      case Map.fetch(chstate(state, :meta), key) do
-        {:ok, old_meta} -> val / meta_entry(old_meta, :value)
+      case Map.fetch(state.meta, key) do
+        {:ok, old_meta} -> val / old_meta.value
         :error -> true
       end
 

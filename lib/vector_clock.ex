@@ -48,25 +48,19 @@ defmodule OnsagerCore.VectorClock do
         n_vec = [{node2, {ctr2, ts2} = ct2} = nct2 | n_clock],
         acc_clock
       ) do
-    # TODO fix this the last clause will not match derp
-    case node1 < node2 do
-      true ->
+    cond do
+      node1 < node2 ->
         merge(v_clock, n_vec, [nct1 | acc_clock])
 
-      false ->
+      node1 > node2 ->
         merge(v_vec, n_clock, [nct2 | acc_clock])
 
-      _ ->
+      true ->
         ({_ctr, _ts} = ct) =
-          case ctr1 > ctr2 do
-            true ->
-              ct1
-
-            false ->
-              ct2
-
-            _ ->
-              {ctr1, max(ts1, ts2)}
+          cond do
+            ctr1 > ctr2 -> ct1
+            ctr1 < ctr2 -> ct2
+            true -> {ctr1, max(ts1, ts2)}
           end
 
         merge(v_clock, n_clock, [{node1, ct} | acc_clock])
