@@ -4,6 +4,9 @@ defmodule OnsagerCore.Ring do
   in the CHState struct (Consistent Hashing Struct) and exchanged between nodes
   via a gossip protocol.
   """
+
+  alias OnsagerCore.VectorClock, as: VC
+
   defmodule CHState do
     defstruct [
       :nodename,
@@ -18,14 +21,37 @@ defmodule OnsagerCore.Ring do
       :rvsn
     ]
 
-    # @type t ::
+    @type t :: %CHState{
+            nodename: term,
+            vclock: VC.vclock(),
+            # change this after implementing chring
+            chring: term,
+            meta: OnsagerCore.Ring.MetaEntry.t(),
+            clustername: {term, term},
+            next: [{integer, term, term, [module], :awaiting | :complete}],
+            members: [{node, {OnsagerCore.Ring.member_status(), VC.vclock(), [{atom, term}]}}],
+            claimant: term,
+            seen: [{term, VC.vclock()}],
+            rvsn: VC.vclock()
+          }
   end
 
   defmodule MetaEntry do
     defstruct [:value, :lastmod]
+
+    @type t :: %MetaEntry{value: term, lastmod: non_neg_integer}
   end
 
   alias OnsagerCore.VectorClock, as: VC
+
+  @type member_status :: :joining | :valid | :invalid | :leaving | :exiting | :down
+  @opaque onsager_core_ring :: CHState.t()
+  @type chstate :: onsager_core_ring
+  @type pending_change ::
+          {node, node, :awaiting | :complete} | {:undefined, :undefined, :undefined}
+  @type resize_transfer :: {{integer, term}, :ordsets.ordset(node), :awaiting | :complete}
+  @type ring_size :: non_neg_integer
+  @type partition_id :: non_neg_integer
 
   def set_tainted(ring) do
     update_meta(:onsager_core_ring_tainted, true, ring)
