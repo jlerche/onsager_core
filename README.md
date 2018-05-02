@@ -2,6 +2,8 @@
 
 Really, mostly a port of riak_core but using server wide clocks instead of merkle trees as the active anti-entropy method. Mainly a learning experience but who knows might become an actual production ready library :dancer:.
 
+Named after [Lars Onsager](https://en.wikipedia.org/wiki/Lars_Onsager).
+
 ## Installation
 
 If [available in Hex](https://hex.pm/docs/publish), the package can be installed

@@ -1,11 +1,25 @@
 defmodule OnsagerCore.VectorClock do
+  @moduledoc """
+  Vector clock implementation
+  """
+
+  @type vclock_node :: term
+  @type counter :: integer
+  @type timestamp :: integer
+  @type dot :: {vclock_node, {counter, timestamp}}
+  @type pure_dot :: {vclock_node, counter}
+  @type vclock :: [dot]
+
   @days_from_gregorian_base_to_epoch 1970 * 365 + 478
   @seconds_from_gregorian_base_to_epoch @days_from_gregorian_base_to_epoch * 24 * 60 * 60
 
+  @spec fresh :: vclock
   def fresh, do: []
 
+  @spec fresh(vclock_node, counter) :: vclock
   def fresh(node, count), do: [{node, {count, timestamp()}}]
 
+  @spec descends(vclock, vclock) :: boolean
   def descends(_, []), do: true
 
   def descends(vec_a, vec_b) do
@@ -21,12 +35,17 @@ defmodule OnsagerCore.VectorClock do
     end
   end
 
+  @spec descends_dot(vclock, dot) :: boolean
   def descends_dot(v_clock, dot), do: descends(v_clock, [dot])
 
+  @spec pure_dot(dot) :: pure_dot
   def pure_dot({node, {counter, _timestamp}}), do: {node, counter}
 
+  @spec dominates(vclock, vclock) :: boolean
   def dominates(vec_a, vec_b), do: descends(vec_a, vec_b) and not descends(vec_b, vec_a)
 
+  @spec merge([vclock]) :: vclock
+  def merge(vclocks)
   def merge([]), do: []
 
   def merge([single_vec_clock]), do: [single_vec_clock]
@@ -67,6 +86,7 @@ defmodule OnsagerCore.VectorClock do
     end
   end
 
+  @spec get_counter(vclock_node, vclock) :: counter
   def get_counter(node, vec_clock) do
     case List.keyfind(vec_clock, node, 1) do
       {_, {ctr, _ts}} -> ctr
@@ -74,6 +94,7 @@ defmodule OnsagerCore.VectorClock do
     end
   end
 
+  @spec get_timestamp(vclock_node, vclock) :: timestamp | :undefined
   def get_timestamp(node, vec_clock) do
     case List.keyfind(vec_clock, node, 1) do
       {_, {_ctr, ts}} -> ts
@@ -81,6 +102,7 @@ defmodule OnsagerCore.VectorClock do
     end
   end
 
+  @spec get_dot(vclock_node, vclock) :: {:ok, dot} | :undefined
   def get_dot(node, vec_clock) do
     case List.keyfind(vec_clock, node, 1) do
       nil -> :undefined
@@ -88,14 +110,17 @@ defmodule OnsagerCore.VectorClock do
     end
   end
 
+  @spec valid_dot(dot) :: boolean
   def valid_dot({_, {count, ts}}) when is_integer(count) when is_integer(ts) do
     true
   end
 
   def valid_dot(_), do: false
 
+  @spec increment(vclock_node, vclock) :: vclock
   def increment(node, vec_clock), do: increment(node, timestamp(), vec_clock)
 
+  @spec increment(vclock_node, timestamp, vclock) :: vclock
   def increment(node, inc_ts, vec_clock) do
     {{_ctr, _ts} = c1, new_vec} =
       case List.keytake(vec_clock, node, 1) do
@@ -106,15 +131,19 @@ defmodule OnsagerCore.VectorClock do
     [{node, c1} | new_vec]
   end
 
+  @spec all_nodes(vclock) :: [vclock_node]
   def all_nodes(vec_clock), do: for({x, {_, _}} <- vec_clock, do: x)
 
+  @spec timestamp() :: timestamp
   def timestamp() do
     {mega_seconds, seconds, _} = :os.timestamp()
     @seconds_from_gregorian_base_to_epoch + mega_seconds * 1_000_000 + seconds
   end
 
+  @spec equal(vclock, vclock) :: boolean
   def equal(vec_a, vec_b), do: Enum.sort(vec_a) === Enum.sort(vec_b)
 
+  @spec prune(vclock, integer, term) :: vclock
   def prune(vec, time_now, bucket_props) do
     sort_vec =
       Enum.sort(vec, fn {node1, {_, ts1}}, {node2, {_, ts2}} -> {ts1, node1} < {ts2, node2} end)

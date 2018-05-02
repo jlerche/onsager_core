@@ -17,6 +17,8 @@ defmodule OnsagerCore.Ring do
       :seen,
       :rvsn
     ]
+
+    # @type t ::
   end
 
   defmodule MetaEntry do
@@ -24,8 +26,6 @@ defmodule OnsagerCore.Ring do
   end
 
   alias OnsagerCore.VectorClock, as: VC
-  alias OnsagerCore.Ring.MetaEntry
-  alias OnsagerCore.Ring.CHState
 
   def set_tainted(ring) do
     update_meta(:onsager_core_ring_tainted, true, ring)
@@ -54,6 +54,15 @@ defmodule OnsagerCore.Ring do
     ring_b2 = %{ring_b | vclock: :undefined, meta: :undefined}
     test_ring = Map.equal?(ring_a2, ring_b2)
     test_vc && test_ring
+  end
+
+  def is_primary(ring, idx_node) do
+    owners = all_owners(ring)
+    Enum.member?(owners, idx_node)
+  end
+
+  def all_owners(state) do
+    []
   end
 
   def get_meta(key, state) do
