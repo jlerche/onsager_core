@@ -131,6 +131,11 @@ defmodule OnsagerCore.Ring do
     CH.nodes(state.chring)
   end
 
+  def all_preflists(state, n) do
+    keys = for {i, _owner} <- all_owners(state), do: <<i + 1::160>>
+    for key <- keys, do: Enum.slice(preflist(key, state), 0, n)
+  end
+
   def get_meta(key, state) do
     case Map.fetch(key, state.meta) do
       :error ->
@@ -146,6 +151,8 @@ defmodule OnsagerCore.Ring do
         {:ok, meta.value}
     end
   end
+
+  def preflist(key, state = %CHState{}), do: CH.successors(key, state.chring)
 
   def update_meta(key, val, state) do
     change =
