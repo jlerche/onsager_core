@@ -136,6 +136,44 @@ defmodule OnsagerCore.Ring do
     for key <- keys, do: Enum.slice(preflist(key, state), 0, n)
   end
 
+  @doc """
+  Given two rings, return the list of owners with differing ownership
+  """
+  @spec diff_nodes(chstate, chstate) :: [node]
+  def diff_nodes(state_1, state_2) do
+    all_owners_0 = Enum.zip(all_owners(state_1), all_owners(state_2))
+    all_diff = for {{i, n1}, {i, n2}} <- all_owners_0, n1 !== n2, do: [n1, n2]
+    :lists.usort(List.flatten(all_diff))
+  end
+
+  def equal_rings(
+        state_a = %CHState{chring: ring_a, meta: meta_a},
+        state_b = %CHState{chring: ring_b, meta: meta_b}
+      ) do
+    md_a = Enum.sort(Map.to_list(meta_a))
+    md_b = Enum.sort(Map.to_list(meta_b))
+
+    case md_a === md_b do
+      false -> false
+      true -> ring_a === ring_b
+    end
+  end
+
+  @doc """
+  Used only when this node is creating a brand new cluster
+  """
+  @spec fresh() :: chstate
+  def fresh, do: fresh(node())
+
+  def fresh(node_name) do
+    fresh(Application.get_env(:onsager_core, :ring_creation_size), node_name)
+  end
+
+  @spec fresh(ring_size, term) :: chstate
+  def fresh(ring_size, node_name) do
+    %CHState{}
+  end
+
   def get_meta(key, state) do
     case Map.fetch(key, state.meta) do
       :error ->
