@@ -177,7 +177,7 @@ defmodule OnsagerCore.Ring do
 
     %CHState{
       nodename: node_name,
-      clustername: {node_name, :erlang.now()},
+      clustername: {node_name, :erlang.timestamp()},
       members: [{node_name, {:valid, vclock, [{:gossip_vsn, gossip_vsn}]}}],
       next: [],
       claimant: node_name,
@@ -195,10 +195,10 @@ defmodule OnsagerCore.Ring do
         CH.update(idx, owner, ring_acc)
       end)
 
-    set_hash(state, new_ring)
+    set_chash(state, new_ring)
   end
 
-  @spec get_meta(term, chdstate) :: {:ok, term} | :undefined
+  @spec get_meta(term, chstate) :: {:ok, term} | :undefined
   def get_meta(key, state) do
     case Map.fetch(key, state.meta) do
       :error ->
@@ -220,6 +220,44 @@ defmodule OnsagerCore.Ring do
     case get_meta(key, state) do
       :undefined -> {:ok, default}
       result -> result
+    end
+  end
+
+  @spec get_buckets(chstate) :: [term]
+  def get_buckets(state = %CHState{}) do
+    Map.keys(state.meta)
+    |> Enum.reduce([], fn
+      {:bucket, bucket}, acc ->
+        [bucket | acc]
+
+      _, acc ->
+        acc
+    end)
+  end
+
+  @doc """
+  Return node that owns the given index.
+  """
+  @spec index_owner(chstate, CH.index_as_int()) :: term
+  def index_owner(state, idx) do
+    {^idx, owner} = List.keyfind(all_owners(state), idx, 1)
+    owner
+  end
+
+  def future_owner(state, idx) do
+    index_owner(future_ring(state), idx)
+  end
+
+  def transfer_node(idx, node, my_state = %CHState{}) do
+    case CH.lookup(idx, my_state.chring) do
+      ^node ->
+        my_state
+
+      _ ->
+        my_node_name = my_state.nodename
+        vclock = VC.increment(my_node_name, my_state.vclock)
+        ch_ring = CH.update(idx, node, my_state.chring)
+        %{my_state | vclock: vclock, chring: ch_ring}
     end
   end
 
@@ -245,6 +283,54 @@ defmodule OnsagerCore.Ring do
       true ->
         state
     end
+  end
+
+  def is_resizing(state) do
+    case resized_ring(state) do
+      :undefined -> false
+      {:ok, _} -> true
+    end
+  end
+
+  def resized_ring(state) do
+    case get_meta(:resized_ring, state) do
+      {:ok, :cleanup} -> {:ok, state.chring}
+      {:ok, chring} -> {:ok, chring}
+      _ -> :undefined
+    end
+  end
+
+  def all_next_owners(state) do
+    next = pending_changes(state)
+    for {idx, _, next_owner, _, _} <- next, do: {idx, next_owner}
+  end
+
+  defp change_owners(state, reassign) do
+    Enum.reduce(reassign, state, fn {idx, new_owner}, chstate ->
+      try do
+        transfer_node(idx, new_owner, chstate)
+      rescue
+        MatchError -> chstate
+      end
+    end)
+  end
+
+  def pending_changes(state = %CHState{}) do
+    state.next
+  end
+
+  @doc """
+  Return the ring that will exist after pending ownership transfers
+  have completed.
+  """
+  @spec future_ring(chstate) :: chstate
+  def future_ring(state) do
+    future_ring(state, is_resizing(state))
+  end
+
+  def future_ring(state, false) do
+    future_state = change_owners(state, all_next_owners(state))
+    # leaving = get_members(arg1, arg2)
   end
 
   defp get_members(members) do
