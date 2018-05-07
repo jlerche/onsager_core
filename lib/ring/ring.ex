@@ -42,6 +42,7 @@ defmodule OnsagerCore.Ring do
 
   alias OnsagerCore.VectorClock, as: VC
   alias OnsagerCore.CHash, as: CH
+  alias OnsagerCore.{Gossip}
 
   @type member_status :: :joining | :valid | :invalid | :leaving | :exiting | :down
   @opaque onsager_core_ring :: CHState.t()
@@ -171,9 +172,33 @@ defmodule OnsagerCore.Ring do
 
   @spec fresh(ring_size, term) :: chstate
   def fresh(ring_size, node_name) do
-    %CHState{}
+    vclock = VC.increment(node_name, VC.fresh())
+    gossip_vsn = Gossip.gossip_version()
+
+    %CHState{
+      nodename: node_name,
+      clustername: {node_name, :erlang.now()},
+      members: [{node_name, {:valid, vclock, [{:gossip_vsn, gossip_vsn}]}}],
+      next: [],
+      claimant: node_name,
+      seen: [{node_name, vclock}],
+      rvsn: vclock,
+      meta: %MetaEntry{}
+    }
   end
 
+  @spec resize(chstate, ring_size) :: chstate
+  def resize(state, new_ring_size) do
+    new_ring =
+      Enum.reduce(all_owners(state), CH.fresh(new_ring_size, :dummyhost_resized), fn {idx, owner},
+                                                                                     ring_acc ->
+        CH.update(idx, owner, ring_acc)
+      end)
+
+    set_hash(state, new_ring)
+  end
+
+  @spec get_meta(term, chdstate) :: {:ok, term} | :undefined
   def get_meta(key, state) do
     case Map.fetch(key, state.meta) do
       :error ->
@@ -187,6 +212,14 @@ defmodule OnsagerCore.Ring do
 
       {:ok, meta} ->
         {:ok, meta.value}
+    end
+  end
+
+  @spec get_meta(term, term, chstate) :: {:ok, term}
+  def get_meta(key, default, state) do
+    case get_meta(key, state) do
+      :undefined -> {:ok, default}
+      result -> result
     end
   end
 
