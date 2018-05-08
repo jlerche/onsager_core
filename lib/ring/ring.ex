@@ -285,6 +285,33 @@ defmodule OnsagerCore.Ring do
     end
   end
 
+  def exit_member(pnode, state, node) do
+    set_member(pnode, state, node, :exiting)
+  end
+
+  def set_member(node, chstate, member, status) do
+    vclock = VC.increment(node, chstate.vclock)
+    chstate_2 = set_member(node, chstate, member, status, :same_vclock)
+    %{chstate_2 | vclock: vclock}
+  end
+
+  def set_member(node, chstate, member, status, :same_vclock) do
+    members_2 =
+      :orddict.update(
+        member,
+        fn {_, vc, md} -> {status, VC.increment(node, vc), md} end,
+        {status, VC.increment(node, VC.fresh()), []},
+        chstate.members
+      )
+
+    %{chstate | members: members_2}
+  end
+
+  def indices(state, node) do
+    owners_all = all_owners(state)
+    for {idx, owner} <- owners_all, owner === node, do: idx
+  end
+
   def is_resizing(state) do
     case resized_ring(state) do
       :undefined -> false
@@ -292,12 +319,38 @@ defmodule OnsagerCore.Ring do
     end
   end
 
+  def is_post_resize(state) do
+    case get_meta(:resized_ring, state) do
+      {:ok, :cleanup} -> true
+      _ -> false
+    end
+  end
+
+  # is_resize_aborted
+  # is_resize_complete
+  # complete_resize_transfers
+  # deletion_complete
+  # resize_transfers
+  # set_resize_transfers
+  # clear_all_resize_transfers
+  # clear_resize_transfers
+
+  @spec resized_ring(chstate) :: {:ok, CH.chash()} | :undefined
   def resized_ring(state) do
     case get_meta(:resized_ring, state) do
       {:ok, :cleanup} -> {:ok, state.chring}
       {:ok, chring} -> {:ok, chring}
       _ -> :undefined
     end
+  end
+
+  @spec set_resized_ring(chstate, CH.chash()) :: chstate
+  def set_resized_ring(state, future_chash) do
+    update_meta(:resized_ring, future_chash, state)
+  end
+
+  def cleanup_after_resize(state) do
+    update_meta(:resized_ring, :cleanup, state)
   end
 
   def all_next_owners(state) do
@@ -330,7 +383,25 @@ defmodule OnsagerCore.Ring do
 
   def future_ring(state, false) do
     future_state = change_owners(state, all_next_owners(state))
-    # leaving = get_members(arg1, arg2)
+    leaving = get_members(future_state.members, [:leaving])
+
+    future_state_2 =
+      Enum.reduce(leaving, future_state, fn node, state_acc ->
+        case indices(state_acc, node) do
+          [] -> exit_member(node, state_acc, node)
+          _ -> state_acc
+        end
+      end)
+
+    %{future_state_2 | next: []}
+  end
+
+  def future_ring(state_0 = %CHState{next: old_next}, true) do
+    case is_post_resize(state_0) do
+      false ->
+        {:ok, future_chash} = resized_ring(state_0)
+        state1 = cleanup_after_resize(state_0)
+    end
   end
 
   defp get_members(members) do
