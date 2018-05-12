@@ -248,6 +248,25 @@ defmodule OnsagerCore.Ring do
     index_owner(future_ring(state), idx)
   end
 
+  # my_indices
+  # num_partitions
+  # future_num_partitions
+  # owner_node
+
+  @spec preflist(binary, chstate) :: [{CH.index_as_int(), term}]
+  def preflist(key, state = %CHState{}), do: CH.successors(key, state.chring)
+
+  # random_node
+  # random_other_index
+  # random_other_node
+  # random_other_active_node
+  # reconcile
+  # rename_node
+  # responsible_index
+  # future_index
+  # check_invalid_future_index
+  # is_future_index
+
   def transfer_node(idx, node, my_state = %CHState{}) do
     case CH.lookup(idx, my_state.chring) do
       ^node ->
@@ -260,8 +279,6 @@ defmodule OnsagerCore.Ring do
         %{my_state | vclock: vclock, chring: ch_ring}
     end
   end
-
-  def preflist(key, state = %CHState{}), do: CH.successors(key, state.chring)
 
   def update_meta(key, val, state) do
     change =
@@ -285,9 +302,28 @@ defmodule OnsagerCore.Ring do
     end
   end
 
+  # remove_meta
+  # claimant
+  # set_claimant
+  # cluster_name
+  # reconcile_names
+  # increment_vclock
+  # ring_version
+  # increment_ring_version
+  # member_status
+  # all_member_status
+  # get_member_meta
+  # update_member_meta
+  # clear_member_meta
+  # add_member
+  # remove_member
+  # leave_member
+
   def exit_member(pnode, state, node) do
     set_member(pnode, state, node, :exiting)
   end
+
+  # down_member
 
   def set_member(node, chstate, member, status) do
     vclock = VC.increment(node, chstate.vclock)
@@ -307,10 +343,53 @@ defmodule OnsagerCore.Ring do
     %{chstate | members: members_2}
   end
 
+  # claiming_members
+  # down_members
+  # set_owner
+
   def indices(state, node) do
     owners_all = all_owners(state)
     for {idx, owner} <- owners_all, owner === node, do: idx
   end
+
+  # future_indices
+
+  def all_next_owners(state) do
+    next = pending_changes(state)
+    for {idx, _, next_owner, _, _} <- next, do: {idx, next_owner}
+  end
+
+  defp change_owners(state, reassign) do
+    Enum.reduce(reassign, state, fn {idx, new_owner}, chstate ->
+      try do
+        transfer_node(idx, new_owner, chstate)
+      rescue
+        MatchError -> chstate
+      end
+    end)
+  end
+
+  # disowning_indices
+  # disowned_during_resize
+
+  def pending_changes(state = %CHState{}) do
+    state.next
+  end
+
+  # set_pending_changes
+  # set_pending_resize
+  # maybe_abort_resize
+  # set_pending_resize_abort
+  # schedule resize_transfer
+  # reschedule_resize_transfer
+  # reschedule_resize_transfers
+  # reschedule_resize_operation
+  # reschedule_inbound_resize_transfers
+  # reschedule_inbound_resize_transfer
+  # reschedule_outbound_resize_transfers
+  # awaiting_resize_transfer
+  # resize_transfer_status
+  # resize_transfer_complete
 
   def is_resizing(state) do
     case resized_ring(state) do
@@ -353,24 +432,72 @@ defmodule OnsagerCore.Ring do
     update_meta(:resized_ring, :cleanup, state)
   end
 
-  def all_next_owners(state) do
-    next = pending_changes(state)
-    for {idx, _, next_owner, _, _} <- next, do: {idx, next_owner}
+  @spec vnode_type(chstate, integer) ::
+          :primary | {:fallback, term} | :future_primary | :resized_primary
+  def vnode_type(state, idx) do
+    vnode_type(state, idx, node())
   end
 
-  defp change_owners(state, reassign) do
-    Enum.reduce(reassign, state, fn {idx, new_owner}, chstate ->
-      try do
-        transfer_node(idx, new_owner, chstate)
-      rescue
-        MatchError -> chstate
+  def vnode_type(state, idx, node_name) do
+    try do
+      case index_owner(state, idx) do
+        ^node_name ->
+          :primary
+
+        owner ->
+          case next_owner(state, idx) do
+            {_, ^node_name, _} -> :future_primary
+            _ -> {:fallback, owner}
+          end
       end
-    end)
+    catch
+      :error, {:badmatch, _} -> :resized_primary
+    end
   end
 
-  def pending_changes(state = %CHState{}) do
-    state.next
+  def next_owner(state, idx) do
+    case List.keyfind(state.next, idx, 0) do
+      false ->
+        {:undefined, :undefined, :undefined}
+
+      next_info ->
+        next_owner(next_info)
+    end
   end
+
+  def next_owner(state, idx, module) do
+    next_info = List.keyfind(state.next, idx, 0)
+    next_owner_status(next_info, module)
+  end
+
+  def next_owner_status(next_info, module) do
+    case next_info do
+      false ->
+        {:undefined, :undefined, :undefined}
+
+      {_, owner, next_owner, _transfers, :complete} ->
+        {owner, next_owner, :complete}
+
+      {_, owner, next_owner, transfers, _status} ->
+        case :ordsets.is_element(module, transfers) do
+          true ->
+            {owner, next_owner, :complete}
+
+          false ->
+            {owner, next_owner, :awaiting}
+        end
+    end
+  end
+
+  defp next_owner({_, owner, next_owner, _transfers, status}) do
+    {owner, next_owner, status}
+  end
+
+  # completed_next_owners
+  # ring_ready
+  # ring_ready_info
+  # handoff_complete
+  # ring_changed
 
   @doc """
   Return the ring that will exist after pending ownership transfers
@@ -404,6 +531,28 @@ defmodule OnsagerCore.Ring do
     end
   end
 
+  # pretty_print
+  # cancel_transfers
+
+  # random legacy stuff
+
+  # internal_ring_changed
+  # merge_meta
+  # pick_val
+  # log_meta_merge
+  # log_ring_result
+  # internal_reconcile
+  # reconcile_divergent
+  # reconcile_members
+  # reconcile_seen
+  # merge_next_status
+  # reconcile_next
+  # reconcile_divergent_next
+  # substitute
+  # reconcile_ring
+  # merge_status x10
+  # transfer_complete
+
   defp get_members(members) do
     get_members(members, [:joining, :valid, :leaving, :exiting, :down])
   end
@@ -411,4 +560,10 @@ defmodule OnsagerCore.Ring do
   defp get_members(members, types) do
     for {node, {v, _, _}} <- members, Enum.member?(types, v), do: node
   end
+
+  # update_seen
+  # equal_cstate
+  # equal_members
+  # equal_seen
+  # filtered_seen
 end
