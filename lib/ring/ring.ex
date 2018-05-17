@@ -301,7 +301,7 @@ defmodule OnsagerCore.Ring do
   def random_other_index(state) do
     all_owners_list = for {idx, owner} <- all_owners(state), owner !== node(), do: idx
 
-    case all_owners do
+    case all_owners_list do
       [] -> hd(my_indices(state))
       _ -> Enum.random(all_owners_list)
     end
