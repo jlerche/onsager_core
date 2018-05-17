@@ -248,16 +248,78 @@ defmodule OnsagerCore.Ring do
     index_owner(future_ring(state), idx)
   end
 
-  # my_indices
-  # num_partitions
-  # future_num_partitions
-  # owner_node
+  @doc """
+  Return all partition indices owned by the node executing this function
+  """
+  @spec my_indices(chstate) :: CH.index_as_int()
+  def my_indices(state) do
+    for {idx, owner} <- all_owners(state), owner === node(), do: idx
+  end
 
+  @doc """
+  Return the number of partitions in this ring
+  """
+  @spec num_partitions(chstate) :: pos_integer
+  def num_partitions(state) do
+    CH.size(state.chring)
+  end
+
+  @spec future_num_partitions(chstate) :: pos_integer
+  def future_num_partitions(state = %CHState{chring: chring}) do
+    case resized_ring(state) do
+      {:ok, ring} -> CH.size(chring)
+      :undefined -> CH.size(chring)
+    end
+  end
+
+  @doc """
+  Return the node responsible for the chstate
+  """
+  @spec owner_node(chstate) :: node
+  def owner_node(state = %CHState{}), do: state.nodename
+
+  @doc """
+  Gives the ordered list {partition, node} elements responsible for a given object key
+  """
   @spec preflist(binary, chstate) :: [{CH.index_as_int(), term}]
   def preflist(key, state = %CHState{}), do: CH.successors(key, state.chring)
 
-  # random_node
-  # random_other_index
+  @doc """
+  Return randomly chosen node from the owners
+  """
+  @spec random_node(chstate) :: node
+  def random_node(state) do
+    members = all_members(state)
+    Enum.random(members)
+  end
+
+  @doc """
+  Return partition index not owned by the node executing this function. If node
+  owns all partitions, return any index
+  """
+  @spec random_other_index(chstate) :: CH.index_as_int()
+  def random_other_index(state) do
+    all_owners_list = for {idx, owner} <- all_owners(state), owner !== node(), do: idx
+
+    case all_owners do
+      [] -> hd(my_indices(state))
+      _ -> Enum.random(all_owners_list)
+    end
+  end
+
+  def random_other_index(state, exclude) when is_list(exclude) do
+    all_owners_list =
+      for {idx, owner} <- all_owners(state),
+          owner !== node(),
+          not Enum.member?(exclude, idx),
+          do: idx
+
+    case all_owners_list do
+      [] -> :no_node
+      all_owners_list -> Enum.random(all_owners_list)
+    end
+  end
+
   # random_other_node
   # random_other_active_node
   # reconcile
@@ -302,7 +364,17 @@ defmodule OnsagerCore.Ring do
     end
   end
 
-  # remove_meta
+  @doc """
+  Delete key in cluster metadata Map
+  """
+  @spec remove_meta(term, chstate) :: chstate
+  def remove_meta(key, state) do
+    case Map.fetch(state.meta, key) do
+      {:ok, _} -> update_meta(key, :removed, state)
+      :error -> state
+    end
+  end
+
   # claimant
   # set_claimant
   # cluster_name
@@ -411,8 +483,14 @@ defmodule OnsagerCore.Ring do
   # deletion_complete
   # resize_transfers
   # set_resize_transfers
-  # clear_all_resize_transfers
-  # clear_resize_transfers
+
+  def clear_all_resize_transfers(state) do
+    Enum.reduce(all_owners(state), state, &clear_resize_transfers/2)
+  end
+
+  def clear_resize_transfers(source, state) do
+    remove_meta({:resize, source}, state)
+  end
 
   @spec resized_ring(chstate) :: {:ok, CH.chash()} | :undefined
   def resized_ring(state) do
@@ -528,6 +606,28 @@ defmodule OnsagerCore.Ring do
       false ->
         {:ok, future_chash} = resized_ring(state_0)
         state1 = cleanup_after_resize(state_0)
+        state2 = clear_all_resize_transfers(state1)
+        resized = %{state2 | chring: future_chash}
+
+        next =
+          Enum.reduce(old_next, [], fn {idx, owner, :resize, _, _}, acc ->
+            delete_entry = {idx, owner, :delete, [], :awaiting}
+
+            try do
+              case index_owner(resized, idx) do
+                ^owner -> acc
+                _ -> [delete_entry | acc]
+              end
+            catch
+              :error, {:badmatch, _} -> [delete_entry | acc]
+            end
+          end)
+
+        %{resized | next: next}
+
+      true ->
+        state1 = remove_meta(:resized_ring, state_0)
+        %{state1 | next: []}
     end
   end
 
