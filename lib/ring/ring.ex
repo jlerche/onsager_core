@@ -307,6 +307,7 @@ defmodule OnsagerCore.Ring do
     end
   end
 
+  @spec random_other_index(chstate, [term]) :: CH.index_as_int() | :no_indices
   def random_other_index(state, exclude) when is_list(exclude) do
     all_owners_list =
       for {idx, owner} <- all_owners(state),
@@ -315,14 +316,43 @@ defmodule OnsagerCore.Ring do
           do: idx
 
     case all_owners_list do
-      [] -> :no_node
+      [] -> :no_indices
       all_owners_list -> Enum.random(all_owners_list)
     end
   end
 
-  # random_other_node
-  # random_other_active_node
-  # reconcile
+  @doc """
+  Return a random node from owners other than this one
+  """
+  @spec random_other_node(chstate) :: node | :no_node
+  def random_other_node(state) do
+    case List.delete(all_members(state), node()) do
+      [] -> :no_node
+      all_members_list -> Enum.random(all_members_list)
+    end
+  end
+
+  @doc """
+  Return random active node other than this one.
+  """
+  @spec random_other_active_node(chstate) :: node | :no_node
+  def random_other_active_node(state) do
+    case List.delete(active_members(state), node) do
+      [] -> :no_node
+      members_list -> Enum.random(members_list)
+    end
+  end
+
+  def reconcile(extern_state, my_state) do
+    check_tainted(extern_state, "Error: reconciling tainted external ring.")
+    check_tainted(my_state, "Error: reconciling tainted internal ring.")
+
+    case internal_reconcile(my_state, extern_state) do
+      {false, state} -> {:no_change, state}
+      {true, state} -> {:new_ring, state}
+    end
+  end
+
   # rename_node
   # responsible_index
   # future_index
@@ -641,7 +671,10 @@ defmodule OnsagerCore.Ring do
   # pick_val
   # log_meta_merge
   # log_ring_result
-  # internal_reconcile
+
+  def internal_reconcile(state, other_state) do
+  end
+
   # reconcile_divergent
   # reconcile_members
   # reconcile_seen
