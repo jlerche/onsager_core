@@ -343,6 +343,7 @@ defmodule OnsagerCore.Ring do
     end
   end
 
+  @spec reconcile(chstate, chstate) :: {:no_change | :new_ring, chstate}
   def reconcile(extern_state, my_state) do
     check_tainted(extern_state, "Error: reconciling tainted external ring.")
     check_tainted(my_state, "Error: reconciling tainted internal ring.")
@@ -353,8 +354,51 @@ defmodule OnsagerCore.Ring do
     end
   end
 
-  # rename_node
-  # responsible_index
+  @doc """
+  Rename old_node to new_node in the ring
+  """
+  @spec rename_node(chstate, atom, atom) :: chstate
+  def rename_node(
+        state = %CHState{
+          chring: ring,
+          nodename: this_node,
+          members: members,
+          claimant: claimant,
+          seen: seen
+        },
+        old_node,
+        new_node
+      )
+      when is_atom(old_node)
+      when is_atom(new_node) do
+    %{
+      state
+      | chring:
+          Enum.reduce(all_owners(state), ring, fn {idx, owner}, acc_in ->
+            case owner do
+              ^old_node -> CH.update(idx, new_node, acc_in)
+              _ -> acc_in
+            end
+          end),
+        members:
+          :orddict.from_list(:proplists.substitute_aliases([{old_node, new_node}], members)),
+        seen: :orddict.from_list(:proplists.substitute_aliases([{old_node, new_node}], seen)),
+        nodename:
+          case this_node do
+            ^old_node -> new_node
+            _ -> this_node
+          end,
+        claimant:
+          case claimant do
+            ^old_node -> new_node
+            _ -> claimant
+          end,
+        vclock: VC.increment(new_node, state.vclock)
+    }
+  end
+
+  # def responsible_index(chash_key, %CHState)
+
   # future_index
   # check_invalid_future_index
   # is_future_index
