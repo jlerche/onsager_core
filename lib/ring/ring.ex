@@ -148,8 +148,8 @@ defmodule OnsagerCore.Ring do
   end
 
   def equal_rings(
-        state_a = %CHState{chring: ring_a, meta: meta_a},
-        state_b = %CHState{chring: ring_b, meta: meta_b}
+        _state_a = %CHState{chring: ring_a, meta: meta_a},
+        _state_b = %CHState{chring: ring_b, meta: meta_b}
       ) do
     md_a = Enum.sort(Map.to_list(meta_a))
     md_b = Enum.sort(Map.to_list(meta_b))
@@ -179,6 +179,7 @@ defmodule OnsagerCore.Ring do
       nodename: node_name,
       clustername: {node_name, :erlang.timestamp()},
       members: [{node_name, {:valid, vclock, [{:gossip_vsn, gossip_vsn}]}}],
+      chring: CH.fresh(ring_size, node_name),
       next: [],
       claimant: node_name,
       seen: [{node_name, vclock}],
@@ -267,7 +268,7 @@ defmodule OnsagerCore.Ring do
   @spec future_num_partitions(chstate) :: pos_integer
   def future_num_partitions(state = %CHState{chring: chring}) do
     case resized_ring(state) do
-      {:ok, ring} -> CH.size(chring)
+      {:ok, ring} -> CH.size(ring)
       :undefined -> CH.size(chring)
     end
   end
@@ -337,7 +338,7 @@ defmodule OnsagerCore.Ring do
   """
   @spec random_other_active_node(chstate) :: node | :no_node
   def random_other_active_node(state) do
-    case List.delete(active_members(state), node) do
+    case List.delete(active_members(state), node()) do
       [] -> :no_node
       members_list -> Enum.random(members_list)
     end
@@ -397,11 +398,105 @@ defmodule OnsagerCore.Ring do
     }
   end
 
-  # def responsible_index(chash_key, %CHState)
+  @doc """
+  Determine the integer ring index responsible for a chash key
+  """
+  @spec responsible_index(binary, chstate) :: integer
+  def responsible_index(chash_key, %CHState{chring: ring}) do
+    <<index_as_int::160>> = chash_key
+    CH.next_index(index_as_int, ring)
+  end
 
-  # future_index
-  # check_invalid_future_index
-  # is_future_index
+  @doc """
+  Given a key and an index in the current ring, determine which index will
+  own the key in the future ring. orig_idx may or may not be the responsible index
+  for that key (orig_idx may not be the first index in chash_key's preflist). The
+  returned index will be in the same position in the preflist for chash_key in the future ring.
+  For regular transitions the returned index will always be orig_idx. If the ring
+  is resizing the index may be different.
+  """
+  @spec future_index(CH.index(), integer, chstate) :: integer | :undefined
+  def future_index(chash_key, orig_idx, state) do
+    future_index(chash_key, orig_idx, :undefined, state)
+  end
+
+  @spec future_index(CH.index(), integer, :undefined | integer, chstate) :: integer | :undefined
+  def future_index(chash_key, orig_idx, nval_check, state) do
+    orig_count = num_partitions(state)
+    next_count = future_num_partitions(state)
+    future_index(chash_key, orig_idx, nval_check, orig_count, next_count)
+  end
+
+  def future_index(chash_key, orig_idx, nval_check, orig_count, next_count) do
+    <<chash_int::160>> = chash_key
+    orig_inc = CH.ring_increment(orig_count)
+    next_inc = CH.ring_increment(next_count)
+
+    # Determine position in the ring of partition that owns the key, ie head of preflist.
+    # Position is 1-based starting from partition (0 + ring increment)
+    # index 0 is always position N.
+    owner_pos = div(chash_int, orig_inc) + 1
+
+    # Determine position of the source partition of the ring
+    # if orig_idx is 0 we know that the position is orig_count (number of partitions)
+    orig_pos =
+      case orig_idx do
+        0 -> orig_count
+        _ -> div(orig_idx, orig_inc)
+      end
+
+    # The distance between the key's owner (head of preflist) and the source partition
+    # is the position of the source in the preflist, the distance maybe negative
+    # in which case we have wrapped around the ring. distance of zero means the source
+    # is the head of the preflist
+    orig_dist =
+      case orig_pos - owner_pos do
+        pos when pos < 0 -> orig_count + pos
+        pos -> pos
+      end
+
+    # In the case that the ring is shrinking the future index for a key whose position
+    # in the preflist is >= ring size may be calculated, any transfer is invalid in
+    # this case, return undefined. The position may also be >= an optional N value for
+    # the key, if this is true undefined is also returned
+    case check_invalid_future_index(orig_dist, next_count, nval_check) do
+      true ->
+        :undefined
+
+      false ->
+        # Determine the partition (head of preflist) that will own the key in the future ring
+        future_pos = div(chash_int, next_inc) + 1
+        next_owner = future_pos * next_inc
+
+        # Determine the partition that the key should be transferred to (has the same position
+        # in future preflist as source partition does in current preflist)
+        ring_top = trunc(:math.pow(2, 160) - 1)
+        rem(next_owner + next_inc * orig_dist, ring_top)
+    end
+  end
+
+  def check_invalid_future_index(orig_dist, next_count, nval_check) do
+    over_ring_size = orig_dist >= next_count
+
+    over_nval =
+      case nval_check do
+        :undefined -> false
+        _ -> orig_dist >= nval_check
+      end
+
+    over_ring_size or over_nval
+  end
+
+  @doc """
+  Takes the hashed value for the key and any partition, orig_idx,
+  in the current preflist for the key. Returns true if target_idx
+  is in the same position in the future preflist for that key
+  """
+  @spec is_future_index(CH.index(), integer, integer, chstate) :: boolean
+  def is_future_index(chash_key, orig_idx, target_idx, state) do
+    future_index = future_index(chash_key, orig_idx, :undefined, state)
+    future_index === target_idx
+  end
 
   def transfer_node(idx, node, my_state = %CHState{}) do
     case CH.lookup(idx, my_state.chring) do
@@ -449,8 +544,18 @@ defmodule OnsagerCore.Ring do
     end
   end
 
-  # claimant
-  # set_claimant
+  @doc """
+  Return the current claimant
+  """
+  @spec claimant(chstate) :: node
+  def claimant(%CHState{claimant: claimant}) do
+    claimant
+  end
+
+  def set_claimant(state = %CHState{}, claimant) do
+    %{state | claimant: claimant}
+  end
+
   # cluster_name
   # reconcile_names
   # increment_vclock
