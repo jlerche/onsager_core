@@ -556,9 +556,39 @@ defmodule OnsagerCore.Ring do
     %{state | claimant: claimant}
   end
 
-  # cluster_name
-  # reconcile_names
-  # increment_vclock
+  @doc """
+  Return the unique identifier for this cluster.
+  """
+  @spec cluster_name(chstate) :: term
+  def cluster_name(state) do
+    state.clustername
+  end
+
+  @doc """
+  Set the unique identifier for this cluster.
+  """
+  def set_cluster_name(state, name) do
+    %{state | clustername: name}
+  end
+
+  def reconcile_names(
+        ring_a = %CHState{clustername: name_a},
+        ring_b = %CHState{clustername: name_b}
+      ) do
+    case name_a === :undefined || name_b === :undefined do
+      true ->
+        {%{ring_a | clustername: :undefined}, %{ring_b | clustername: :undefined}}
+
+      false ->
+        {ring_a, ring_b}
+    end
+  end
+
+  def increment_vclock(node, state = %CHState{}) do
+    vclock = VC.increment(node, state.vclock)
+    %{state | vclock: vclock}
+  end
+
   # ring_version
   # increment_ring_version
   # member_status

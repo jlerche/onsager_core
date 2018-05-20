@@ -1,0 +1,8 @@
+[
+  {
+    "srcDir": "lib",
+    "files": "**/*.ex",
+    "command": "mix compile",
+    "showOutput": true
+  }
+]
