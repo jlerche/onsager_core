@@ -810,14 +810,77 @@ defmodule OnsagerCore.Ring do
     end
   end
 
+  @doc """
+  Returns a list of all pending ownership transfers
+  """
   def pending_changes(state = %CHState{}) do
     state.next
   end
 
-  # set_pending_changes
-  # set_pending_resize
-  # maybe_abort_resize
-  # set_pending_resize_abort
+  def set_pending_changes(state, transfers) do
+    %{state | next: transfers}
+  end
+
+  @doc """
+  Given a ring, resizing, that has been resized (and presumably rebalanced),
+  schedule a resize transition for orig.
+  """
+  @spec set_pending_resize(chstate, chstate) :: chstate
+  def set_pending_resize(resizing, orig) do
+    # all existing indexes must transfer data when the ring is being resized
+    next =
+      for {idx, orig_owner} <- all_owners(orig), do: {idx, orig_owner, :resize, [], :awaiting}
+
+    # whether or not the ring is shrinking or expanding, some
+    # ownership may be shared between the old and new ring. To prevent
+    # degenerate cases where partitions whose ownership does not
+    # change are transferred a bunch of data which they in turn must
+    # ignore on each subsequent transfer, they move to the front
+    # of the next list which is treated as ordered.
+
+    future_owners = all_owners(resizing)
+
+    sorted_next =
+      Enum.sort(next, fn {idx, owner, _, _, _}, _ ->
+        # only need to check one element
+        # true, false -> true
+        # true, true -> true
+        # false, false -> false
+        # false, true -> false
+        Enum.member?(future_owners, {idx, owner})
+      end)
+
+    # Resizing is assumed to have a modified chring, need to put back
+    # the original chring to not install the resized one pre-emptively. The
+    # resized ring is stored in ring metadata for later use.
+    future_chash = chash(resizing)
+    reset_ring = set_chash(resizing, chash(orig))
+    set_resized_ring(set_pending_changes(reset_ring, sorted_next), future_chash)
+  end
+
+  @spec maybe_abort_resize(chstate) :: {boolean, chstate}
+  def maybe_abort_resize(state) do
+    resizing = is_resizing(state)
+    post_resize = is_post_resize(state)
+    pending_abort = is_resize_aborted(state)
+
+    case pending_abort and resizing and not post_resize do
+      true ->
+        state_1 = %{state | next: []}
+        state_2 = clear_all_resize_transfers(state_1)
+        state_3 = remove_meta(:resized_ring_abort, state_2)
+        {true, remove_meta(:resized_ring, state_3)}
+
+      false ->
+        {false, state}
+    end
+  end
+
+  @spec set_pending_resize_abort(chstate) :: chstate
+  def set_pending_resize_abort(state) do
+    update_meta(:resized_ring_abort, true, state)
+  end
+
   # schedule resize_transfer
   # reschedule_resize_transfer
   # reschedule_resize_transfers
@@ -843,7 +906,13 @@ defmodule OnsagerCore.Ring do
     end
   end
 
-  # is_resize_aborted
+  def is_resize_aborted(state) do
+    case get_meta(:resized_ring_abort, state) do
+      {:ok, true} -> true
+      _ -> false
+    end
+  end
+
   # is_resize_complete
   # complete_resize_transfers
   # deletion_complete
