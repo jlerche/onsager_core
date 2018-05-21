@@ -52,6 +52,7 @@ defmodule OnsagerCore.Ring do
   @type resize_transfer :: {{integer, term}, :ordsets.ordset(node), :awaiting | :complete}
   @type ring_size :: non_neg_integer
   @type partition_id :: non_neg_integer
+  @type index :: integer
 
   def set_tainted(ring) do
     update_meta(:onsager_core_ring_tainted, true, ring)
@@ -589,22 +590,115 @@ defmodule OnsagerCore.Ring do
     %{state | vclock: vclock}
   end
 
-  # ring_version
-  # increment_ring_version
-  # member_status
-  # all_member_status
-  # get_member_meta
-  # update_member_meta
-  # clear_member_meta
-  # add_member
-  # remove_member
-  # leave_member
+  def ring_version(%CHState{rvsn: rvsn}) do
+    rvsn
+  end
+
+  def increment_ring_version(node, state) do
+    rvsn = VC.increment(node, state.rvsn)
+    %{state | rvsn: rvsn}
+  end
+
+  @spec member_status(chstate | [node], node) :: member_status
+  def member_status(%CHState{members: members}, node) do
+    member_status(members, node)
+  end
+
+  def member_status(members, node) do
+    case :orddict.find(node, members) do
+      {:ok, {status, _, _}} -> status
+      _ -> :invalid
+    end
+  end
+
+  @doc """
+  Returns the current membership status for all nodes in the cluster.
+  """
+  @spec all_member_status(chstate) :: [{node, member_status}]
+  def all_member_status(%CHState{members: members}) do
+    for {node, {status, _vc, _}} <- members, status !== :invalid, do: {node, status}
+  end
+
+  def get_member_meta(state, member, key) do
+    with {:ok, {_, _, meta}} <- :orddict.find(member, state.members),
+         {:ok, value} <- :orddict.find(key, meta) do
+      value
+    else
+      :error -> :undefined
+    end
+  end
+
+  @doc """
+  Set a key in the member metadata orddict
+  """
+  def update_member_meta(node, state, member, key, val) do
+    vclock = VC.increment(node, state.vclock)
+    state_2 = update_member_meta(node, state, member, key, val, :same_vclock)
+    %{state_2 | vclock: vclock}
+  end
+
+  def update_member_meta(node, state, member, key, val, :same_vclock) do
+    members = state.members
+
+    case :orddict.is_key(member, members) do
+      true ->
+        members_2 =
+          :orddict.update(
+            member,
+            fn {status, vclock, meta_data} ->
+              {status, VC.increment(node, vclock), :orddict.store(key, val, meta_data)}
+            end,
+            members
+          )
+
+        %{state | members: members_2}
+
+      false ->
+        state
+    end
+  end
+
+  def clear_member_meta(node, state, member) do
+    members = state.members
+
+    case :orddict.is_key(member, members) do
+      true ->
+        members_2 =
+          :orddict.update(
+            member,
+            fn {status, vclock, _meta_dict} ->
+              {status, VC.increment(node, vclock), :orddict.new()}
+            end,
+            members
+          )
+
+        %{state | members: members_2}
+
+      false ->
+        state
+    end
+  end
+
+  def add_member(p_node, state, node) do
+    set_member(p_node, state, node, :joining)
+  end
+
+  def remove_member(p_node, state, node) do
+    state_2 = clear_member_meta(p_node, state, node)
+    set_member(p_node, state_2, node, :invalid)
+  end
+
+  def leave_member(p_node, state, node) do
+    set_member(p_node, state, node, :leaving)
+  end
 
   def exit_member(pnode, state, node) do
     set_member(pnode, state, node, :exiting)
   end
 
-  # down_member
+  def down_member(p_node, state, node) do
+    set_member(p_node, state, node, :down)
+  end
 
   def set_member(node, chstate, member, status) do
     vclock = VC.increment(node, chstate.vclock)
@@ -624,16 +718,47 @@ defmodule OnsagerCore.Ring do
     %{chstate | members: members_2}
   end
 
-  # claiming_members
-  # down_members
-  # set_owner
+  @doc """
+  Return a list of all members of the  cluster that are eligible to claim partitions
+  """
+  @spec claiming_members(chstate) :: [node]
+  def claiming_members(%CHState{members: members}) do
+    get_members(members, [:joining, :valid, :down])
+  end
 
+  @doc """
+  Return a list of all members of the cluster that are marked down.
+  """
+  @spec down_members(chstate) :: [node]
+  def down_members(%CHState{members: members}) do
+    get_members(members, [:down])
+  end
+
+  @doc """
+  Set the node that is responsible for a given chstate
+  """
+  @spec set_owner(chstate, node) :: chstate
+  def set_owner(state, node) do
+    %{state | nodename: node}
+  end
+
+  @doc """
+  Return all partition indices owned by a node.
+  """
+  @spec indices(chstate, node) :: [integer]
   def indices(state, node) do
     owners_all = all_owners(state)
     for {idx, owner} <- owners_all, owner === node, do: idx
   end
 
-  # future_indices
+  @doc """
+  Return all partition indices that will be owned by a node after all
+  pending ownership transfers have completed.
+  """
+  @spec future_indices(chstate, node) :: [integer]
+  def future_indices(state, node) do
+    indices(future_ring(state), node)
+  end
 
   def all_next_owners(state) do
     next = pending_changes(state)
@@ -650,8 +775,40 @@ defmodule OnsagerCore.Ring do
     end)
   end
 
-  # disowning_indices
-  # disowned_during_resize
+  @doc """
+  Return all indices that a node is scheduled to give to another
+  """
+  @spec disowning_indices(chstate, node) :: [integer]
+  def disowning_indices(state, node) do
+    case is_resizing(state) do
+      false ->
+        for {idx, owner, _next_owner, _mods, _status} <- state.next, owner === node, do: idx
+
+      true ->
+        for {idx, owner} <- all_owners(state),
+            owner === node,
+            disowned_during_resize(state, idx, owner),
+            do: idx
+    end
+  end
+
+  @doc """
+  Check if index is being disowned by the current node
+  """
+  @spec disowned_during_resize(chstate, index, term) :: boolean
+  def disowned_during_resize(state, idx, owner) do
+    next_owner =
+      try do
+        future_owner(state, idx)
+      catch
+        _, _ -> :undefined
+      end
+
+    case next_owner do
+      ^owner -> false
+      _ -> true
+    end
+  end
 
   def pending_changes(state = %CHState{}) do
     state.next
@@ -851,7 +1008,7 @@ defmodule OnsagerCore.Ring do
   # log_meta_merge
   # log_ring_result
 
-  def internal_reconcile(state, other_state) do
+  def internal_reconcile(_state, _other_state) do
   end
 
   # reconcile_divergent
