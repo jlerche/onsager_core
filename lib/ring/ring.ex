@@ -881,13 +881,69 @@ defmodule OnsagerCore.Ring do
     update_meta(:resized_ring_abort, true, state)
   end
 
-  # schedule resize_transfer
-  # reschedule_resize_transfer
-  # reschedule_resize_transfers
-  # reschedule_resize_operation
+  @spec schedule_resize_transfer(chstate, {integer, term}, integer | {integer, term}) :: chstate
+  def schedule_resize_transfer(state, source, target_idx) when is_integer(target_idx) do
+    target_node = index_owner(future_ring(state), target_idx)
+    schedule_resize_transfer(state, source, {target_idx, target_node})
+  end
+
+  def schedule_resize_transfer(state, source, source), do: state
+
+  def schedule_resize_transfer(state, source, target) do
+    transfers = resize_transfers(state, source)
+    # ignore if we have already scheduled a transferom source to target
+    case List.keymember?(transfers, target, 0) do
+      true ->
+        state
+
+      false ->
+        transfers_1 = List.keystore(transfers, target, 0, {target, :ordsets.new(), :awaiting})
+        set_resize_transfers(state, source, transfers_1)
+    end
+  end
+
+  @doc """
+  Reassign all outbound and inbound resize transfers from node to new_node.
+  """
+  @spec reschedule_resize_transfers(chstate, term, term) :: chstate
+  def reschedule_resize_transfers(state = %CHState{next: next}, node, new_node) do
+    {new_next, new_state} =
+      Enum.map_reduce(next, state, fn entry, state_acc ->
+        reschedule_resize_operation(node, new_node, entry, state_acc)
+      end)
+
+    %{new_state | next: new_next}
+  end
+
+  def reschedule_resize_operation(
+        curr_node,
+        new_node,
+        {idx, curr_node, :resize, _mods, _status},
+        state
+      ) do
+    new_entry = {idx, new_node, :resize, :ordsets.new(), :awaiting}
+    new_state = reschedule_outbound_resize_transfers(state, idx, curr_node, new_node)
+    {new_entry, new_state}
+  end
+
   # reschedule_inbound_resize_transfers
   # reschedule_inbound_resize_transfer
-  # reschedule_outbound_resize_transfers
+  def reschedule_outbound_resize_transfers(state, idx, node, new_node) do
+    old_source = {idx, node}
+    new_source = {idx, new_node}
+    transfers = resize_transfers(state, old_source)
+
+    func = fn
+      {i, n} when n === node -> {i, new_node}
+      t -> t
+    end
+
+    new_transfers =
+      for {target, _, _} <- transfers, do: {func.(target), :ordsets.new(), :awaiting}
+
+    set_resize_transfers(clear_resize_transfers(old_source, state), new_source, new_transfers)
+  end
+
   # awaiting_resize_transfer
   # resize_transfer_status
   # resize_transfer_complete
@@ -913,11 +969,36 @@ defmodule OnsagerCore.Ring do
     end
   end
 
-  # is_resize_complete
-  # complete_resize_transfers
-  # deletion_complete
-  # resize_transfers
-  # set_resize_transfers
+  @spec is_resize_complete(chstate) :: boolean
+  def is_resize_complete(%CHState{next: next}) do
+    not Enum.any?(next, fn
+      {_, _, _, _, :awaiting} -> true
+      {_, _, _, _, :complete} -> false
+    end)
+  end
+
+  @spec complete_resize_transfers(chstate, {integer, term}, module) :: [{integer, term}]
+  def complete_resize_transfers(state, source, mod) do
+    for {target, mods, status} <- resize_transfers(state, source),
+        status === :complete or :ordsets.is_element(mod, mods),
+        do: target
+  end
+
+  @spec deletion_complete(chstate, integer, module) :: chstate
+  def deletion_complete(state, idx, mod) do
+    transfer_complete(state, idx, mod)
+  end
+
+  @spec resize_transfers(chstate, {integer, term}) :: [resize_transfer]
+  def resize_transfers(state, source) do
+    {:ok, transfers} = get_meta({:resize, source}, [], state)
+    transfers
+  end
+
+  @spec set_resize_transfers(chstate, {integer, term}, [resize_transfer]) :: chstate
+  def set_resize_transfers(state, source, transfers) do
+    update_meta({:resize, source}, transfers, state)
+  end
 
   def clear_all_resize_transfers(state) do
     Enum.reduce(all_owners(state), state, &clear_resize_transfers/2)
@@ -1089,7 +1170,23 @@ defmodule OnsagerCore.Ring do
   # substitute
   # reconcile_ring
   # merge_status x10
-  # transfer_complete
+
+  defp transfer_complete(cstate = %CHState{next: next, vclock: vclock}, idx, mod) do
+    {idx, owner, next_owner, transfers, status} = List.keyfind(next, idx, 0)
+    transfers_2 = :ordsets.add_element(mod, transfers)
+    vnode_mods = :ordsets.from_list(for {_, vmod} <- OnsagerCore.vnode_modules(), do: vmod)
+
+    status_2 =
+      case {status, transfers} do
+        {:complete, _} -> :complete
+        {:awaiting, ^vnode_mods} -> :complete
+        _ -> :awaiting
+      end
+
+    next_2 = List.keyreplace(next, idx, 0, {idx, owner, next_owner, transfers_2, status_2})
+    vclock_2 = VC.increment(owner, vclock)
+    %{cstate | next: next_2, vclock: vclock_2}
+  end
 
   defp get_members(members) do
     get_members(members, [:joining, :valid, :leaving, :exiting, :down])

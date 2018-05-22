@@ -6,7 +6,7 @@ defmodule OnsagerCore do
   @wait_poll_interval 100
 
   def stop() do
-    stop("riak stop requested")
+    stop("onsager stop requested")
   end
 
   def stop(_reason) do
@@ -61,6 +61,13 @@ defmodule OnsagerCore do
 
       _ ->
         {:error, :unable_to_get_join_ring}
+    end
+  end
+
+  def vnode_modules() do
+    case Application.get_env(:onsager_core, :vnode_modules) do
+      :undefined -> []
+      {:ok, mods} -> mods
     end
   end
 
