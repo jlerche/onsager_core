@@ -155,5 +155,5 @@ defmodule OnsagerCore.CHash do
 
   @spec random_node(chash_node, chash_node) :: chash_node
   defp random_node(node_a, node_a), do: node_a
-  defp random_node(node_a, node_b), do: Enum.fetch!([node_a, node_b], :rand.uniform(2) - 1)
+  defp random_node(node_a, node_b), do: Enum.random([node_a, node_b])
 end
