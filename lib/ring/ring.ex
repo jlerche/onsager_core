@@ -926,8 +926,43 @@ defmodule OnsagerCore.Ring do
     {new_entry, new_state}
   end
 
-  # reschedule_inbound_resize_transfers
-  # reschedule_inbound_resize_transfer
+  def reschedule_resize_operation(
+        node,
+        new_node,
+        {idx, other_node, :resize, _mods, _status} = entry,
+        state
+      ) do
+    {changed, new_state} =
+      reschedule_inbound_resize_transfers({idx, other_node}, node, new_node, state)
+
+    case changed do
+      true ->
+        new_entry = {idx, other_node, :resize, :ordsets.new(), :awaiting}
+        {new_entry, new_state}
+
+      false ->
+        {entry, state}
+    end
+  end
+
+  def reschedule_inbound_resize_transfers(source, node, new_node, state) do
+    func = fn transfer, acc ->
+      {new_xfer, new_acc} = reschedule_inbound_resize_transfer(transfer, node, new_node)
+      {new_xfer, new_acc or acc}
+    end
+
+    {resize_transfers, changed} = Enum.map_reduce(resize_transfers(state, source), false, func)
+    {changed, set_resize_transfers(state, source, resize_transfers)}
+  end
+
+  def reschedule_inbound_resize_transfer({{idx, target}, _, _}, target, new_node) do
+    {{{idx, new_node}, :ordsets.new(), :awaiting}, true}
+  end
+
+  def reschedule_inbound_resize_transfer(transfer, _, _) do
+    {transfer, false}
+  end
+
   def reschedule_outbound_resize_transfers(state, idx, node, new_node) do
     old_source = {idx, node}
     new_source = {idx, new_node}
@@ -944,10 +979,94 @@ defmodule OnsagerCore.Ring do
     set_resize_transfers(clear_resize_transfers(old_source, state), new_source, new_transfers)
   end
 
-  # awaiting_resize_transfer
-  # resize_transfer_status
-  # resize_transfer_complete
+  @doc """
+  Returns the first awaiting resize_transfer for a {source_idx, source_node} pair.
+  If all transfers for the pair are complete, undefined is returned.
+  """
+  @spec awaiting_resize_transfer(chstate, {integer, term}, module) :: {integer, term} | :undefined
+  def awaiting_resize_transfer(state, source, mod) do
+    resize_transfers = resize_transfers(state, source)
 
+    awaiting =
+      for {target, mods, status} <- resize_transfers,
+          status !== :complete,
+          not :ordsets.is_element(mod, mods),
+          do: {target, mods, status}
+
+    case awaiting do
+      [] -> :undefined
+      [{target, _, _}, _] -> target
+    end
+  end
+
+  @doc """
+  Return the status of a resize_transfer for source (index-node pair). :undefined
+  is returned if no such transfer is scheduled. :complete is returned if the transfer
+  is marked as such or mod is contained in the completed modules set. :awaiting is returned
+  otherwise.
+  """
+  @spec resize_transfer_status(chstate, {integer, term}, {integer, term}, module) ::
+          :awaiting | :complete | :undefined
+  def resize_transfer_status(state, source, target, mod) do
+    resize_transfers = resize_transfers(state, source)
+
+    is_complete =
+      case List.keyfind(resize_transfers, target, 0) do
+        false -> :undefined
+        {^target, _, :complete} -> true
+        {^target, mods, :awaiting} -> :ordsets.is_element(mod, mods)
+      end
+
+    case is_complete do
+      true -> :complete
+      false -> :awaiting
+      :undefined -> :undefined
+    end
+  end
+
+  def resize_transfer_complete(state, source = {src_idx, _}, target, mod) do
+    resize_transfers = resize_transfers(state, source)
+    transfer = List.keyfind(resize_transfers, target, 0)
+
+    case transfer do
+      {^target, mods, status} ->
+        vnode_mods = :ordsets.from_list(for {_, vmod} <- OnsagerCore.vnode_modules(), do: vmod)
+        mods_2 = :ordsets.add_element(mod, mods)
+
+        status_2 =
+          case {status, mods_2} do
+            {:complete, _} ->
+              :complete
+
+            {:awaiting, ^vnode_mods} ->
+              :complete
+
+            _ ->
+              :awaiting
+          end
+
+        resize_transfers_2 =
+          List.keyreplace(resize_transfers, target, 0, {target, mods_2, status_2})
+
+        state_1 = set_resize_transfers(state, source, resize_transfers_2)
+
+        all_complete =
+          Enum.all?(resize_transfers_2, fn
+            {_, _, :complete} -> true
+            {_, mods_3, :awaiting} -> :ordsets.is_element(mod, mods_3)
+          end)
+
+        case all_complete do
+          true -> transfer_complete(state_1, src_idx, mod)
+          false -> state_1
+        end
+
+      _ ->
+        state
+    end
+  end
+
+  @spec is_resizing(chstate) :: boolean
   def is_resizing(state) do
     case resized_ring(state) do
       :undefined -> false
