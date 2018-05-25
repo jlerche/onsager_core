@@ -1206,8 +1206,44 @@ defmodule OnsagerCore.Ring do
     {owner, next_owner, status}
   end
 
-  # completed_next_owners
-  # ring_ready
+  def completed_next_owners(mod, %CHState{next: next}) do
+    for ninfo = {idx, _, _, _, _} <- next,
+        {owner, next_owner, :complete} <- [next_owner_status(ninfo, mod)],
+        do: {idx, owner, next_owner}
+  end
+
+  @doc """
+  Returns true if all cluster members have seen the current ring.
+  """
+  @spec ring_ready(chstate) :: boolean
+  def ring_ready(state) do
+    check_tainted(state, "Error: ring_ready called on tainted ring")
+    owner = owner_node(state)
+    state_1 = update_seen(owner, state)
+    seen = state_1.seen
+    members = get_members(state_1.members, [:valid, :leaving, :exiting])
+    vclock = state_1.vclock
+
+    ring =
+      for node <- members do
+        case :orddict.find(node, seen) do
+          :error ->
+            false
+
+          {:ok, vec_clock} ->
+            VC.equal(vclock, vec_clock)
+        end
+      end
+
+    ready = Enum.all?(ring, fn x -> x === true end)
+    ready
+  end
+
+  def ring_ready() do
+    {:ok, ring} = OnsagerCore.Ring.Manager.get_raw_ring()
+    ring_ready(ring)
+  end
+
   # ring_ready_info
   # handoff_complete
   # ring_changed
@@ -1315,7 +1351,11 @@ defmodule OnsagerCore.Ring do
     for {node, {v, _, _}} <- members, Enum.member?(types, v), do: node
   end
 
-  # update_seen
+  def update_seen(node, state = %CHState{vclock: vclock, seen: seen}) do
+    seen_2 = :orddict.update(node, fn seen_vc -> VC.merge([seen_vc, vclock]) end, vclock, seen)
+    %{state | seen: seen_2}
+  end
+
   # equal_cstate
   # equal_members
   # equal_seen
