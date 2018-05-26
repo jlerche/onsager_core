@@ -1244,9 +1244,45 @@ defmodule OnsagerCore.Ring do
     ring_ready(ring)
   end
 
-  # ring_ready_info
-  # handoff_complete
-  # ring_changed
+  def ring_ready_info(state_0) do
+    owner = owner_node(state_0)
+    state = update_seen(owner, state_0)
+    seen = state.seen
+    members = get_members(state.members, [:valid, :leaving, :exiting])
+
+    recent_vclock =
+      :orddict.fold(
+        fn _, vc, recent ->
+          case VC.descends(vc, recent) do
+            true -> vc
+            false -> recent
+          end
+        end,
+        state.vclock,
+        seen
+      )
+
+    outdated =
+      :orddict.filter(
+        fn node, vc -> not VC.equal(vc, recent_vclock) and Enum.member?(members, node) end,
+        seen
+      )
+
+    outdated
+  end
+
+  @doc """
+  Marks a pending transfer as complete
+  """
+  @spec handoff_complete(chstate, integer, module) :: chstate
+  def handoff_complete(state, idx, mod) do
+    transfer_complete(state, idx, mod)
+  end
+
+  def ring_changed(node, state) do
+    check_tainted(state, "Error ring_changed called on tainted ring")
+    internal_ring_changed(node, state)
+  end
 
   @doc """
   Return the ring that will exist after pending ownership transfers
@@ -1307,7 +1343,15 @@ defmodule OnsagerCore.Ring do
 
   # random legacy stuff
 
-  # internal_ring_changed
+  defp internal_ring_changed(node, cstate) do
+    state = update_seen(node, cstate)
+
+    case ring_ready(state) do
+      false -> state
+      true -> OnsagerCore.Claim.Claimant.ring_changed(node, state)
+    end
+  end
+
   # merge_meta
   # pick_val
   # log_meta_merge

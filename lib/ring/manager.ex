@@ -17,4 +17,11 @@ defmodule OnsagerCore.Ring.Manager do
         GenServer.call(__MODULE__, :get_raw_ring, :infinity)
     end
   end
+
+  # get_raw_ring_chashbin
+  # refresh_my_ring
+
+  def refresh_ring(node, cluster_name) do
+    GenServer.cast({__MODULE__, node}, {:refresh_my_ring, cluster_name})
+  end
 end
