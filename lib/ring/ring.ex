@@ -5,6 +5,8 @@ defmodule OnsagerCore.Ring do
   via a gossip protocol.
   """
 
+  require Logger
+
   defmodule CHState do
     defstruct [
       :nodename,
@@ -1338,8 +1340,18 @@ defmodule OnsagerCore.Ring do
     end
   end
 
-  # pretty_print
-  # cancel_transfers
+  def _pretty_print(_ring, _opts) do
+    # to be filled in whenever
+    :ok
+  end
+
+  @doc """
+  Return a ring with all transfers cancelled
+  """
+  @spec cancel_transfers(chstate) :: chstate
+  def cancel_transfers(ring) do
+    %{ring | next: []}
+  end
 
   # random legacy stuff
 
@@ -1352,10 +1364,36 @@ defmodule OnsagerCore.Ring do
     end
   end
 
-  # merge_meta
-  # pick_val
-  # log_meta_merge
-  # log_ring_result
+  defp merge_meta({n1, m1}, {n2, m2}) do
+    meta = Map.merge(m1, m2, fn _, d1, d2 -> pick_val({n1, d1}, {n2, d2}) end)
+    log_meta_merge(m1, m2, meta)
+    meta
+  end
+
+  defp pick_val({n1, m1}, {n2, m2}) do
+    case {m1.lastmod, n1} > {m2.lastmod, n2} do
+      true -> m1
+      false -> m2
+    end
+  end
+
+  defp log_meta_merge(m1, m2, meta) do
+    Logger.debug("Meta A: #{inspect(m1)}")
+    Logger.debug("Meta B: #{inspect(m2)}")
+    Logger.debug("Meta result: #{inspect(meta)}")
+  end
+
+  defp log_ring_result(%CHState{vclock: vclock, members: members, next: next}) do
+    Logger.debug(
+      "Updated ring vclock: #{inspect(vclock)}, Members: #{inspect(members)}, Next: #{
+        inspect(next)
+      }"
+    )
+  end
+
+  defp log_ring_result(ring) do
+    Logger.debug("Ring: #{inspect(ring)}")
+  end
 
   def internal_reconcile(_state, _other_state) do
   end
