@@ -1355,7 +1355,7 @@ defmodule OnsagerCore.Ring do
 
   # random legacy stuff
 
-  defp internal_ring_changed(node, cstate) do
+  def internal_ring_changed(node, cstate) do
     state = update_seen(node, cstate)
 
     case ring_ready(state) do
@@ -1364,26 +1364,26 @@ defmodule OnsagerCore.Ring do
     end
   end
 
-  defp merge_meta({n1, m1}, {n2, m2}) do
+  def merge_meta({n1, m1}, {n2, m2}) do
     meta = Map.merge(m1, m2, fn _, d1, d2 -> pick_val({n1, d1}, {n2, d2}) end)
     log_meta_merge(m1, m2, meta)
     meta
   end
 
-  defp pick_val({n1, m1}, {n2, m2}) do
+  def pick_val({n1, m1}, {n2, m2}) do
     case {m1.lastmod, n1} > {m2.lastmod, n2} do
       true -> m1
       false -> m2
     end
   end
 
-  defp log_meta_merge(m1, m2, meta) do
+  def log_meta_merge(m1, m2, meta) do
     Logger.debug("Meta A: #{inspect(m1)}")
     Logger.debug("Meta B: #{inspect(m2)}")
     Logger.debug("Meta result: #{inspect(meta)}")
   end
 
-  defp log_ring_result(%CHState{vclock: vclock, members: members, next: next}) do
+  def log_ring_result(%CHState{vclock: vclock, members: members, next: next}) do
     Logger.debug(
       "Updated ring vclock: #{inspect(vclock)}, Members: #{inspect(members)}, Next: #{
         inspect(next)
@@ -1391,16 +1391,74 @@ defmodule OnsagerCore.Ring do
     )
   end
 
-  defp log_ring_result(ring) do
+  def log_ring_result(ring) do
     Logger.debug("Ring: #{inspect(ring)}")
   end
 
-  def internal_reconcile(_state, _other_state) do
+  def internal_reconcile(state, other_state) do
+    vnode = owner_node(state)
+    state_2 = update_seen(vnode, state)
+    other_state_2 = update_seen(vnode, other_state)
+    seen = reconcile_seen(state_2, other_state_2)
+    state_3 = %{state_2 | seen: seen}
+    other_state_3 = %{other_state_2 | seen: seen}
+    seen_changed = not equal_seen(state, state_3)
+
+    # try to reconcile based on vector clock, choosing most recent state
+    vc1 = state_3.vclock
+    vc2 = other_state_3.vclock
+    # VectorClock.merge has different results depending on the order of input vclocks
+    # when input vclocks have the same counter but different timestamps. Need merge
+    # to be deterministic here.
+    vmerge1 = VC.merge([vc1, vc2])
+    vmerge2 = VC.merge([vc2, vc1])
+
+    vc3 =
+      case {VC.equal(vmerge1, vmerge2), vmerge1 < vmerge2} do
+        {true, _} ->
+          vmerge1
+
+        {_, true} ->
+          vmerge1
+
+        {_, false} ->
+          vmerge2
+      end
+
+    newer = VC.descends(vc1, vc2)
+    older = VC.descends(vc2, vc1)
+    equal = equal_cstate(state_3, other_state_3)
+
+    case {equal, newer, older} do
+      {_, true, false} ->
+        {seen_changed, %{state_3 | vclock: vc3}}
+
+      {_, false, true} ->
+        {true, %{other_state_3 | nodename: vnode, vclock: vc3}}
+
+      {true, _, _} ->
+        {seen_changed, %{state_3 | vclock: vc3}}
+
+      {_, true, true} ->
+        # TODO
+        {}
+
+      {_, false, false} ->
+        # TODO
+        {}
+    end
   end
 
-  # reconcile_divergent
+  def reconcile_divergent(vnode, state_a, state_b) do
+    vclock = VC.increment(vnode, VC.merge([state_a.vclock, state_b.vclock]))
+  end
+
   # reconcile_members
-  # reconcile_seen
+
+  def reconcile_seen(state_a, state_b) do
+    :orddict.merge(fn _, vc1, vc2 -> VC.merge([vc1, vc2]) end, state_a.seen, state_b.seen)
+  end
+
   # merge_next_status
   # reconcile_next
   # reconcile_divergent_next
@@ -1408,7 +1466,7 @@ defmodule OnsagerCore.Ring do
   # reconcile_ring
   # merge_status x10
 
-  defp transfer_complete(cstate = %CHState{next: next, vclock: vclock}, idx, mod) do
+  def transfer_complete(cstate = %CHState{next: next, vclock: vclock}, idx, mod) do
     {idx, owner, next_owner, transfers, status} = List.keyfind(next, idx, 0)
     transfers_2 = :ordsets.add_element(mod, transfers)
     vnode_mods = :ordsets.from_list(for {_, vmod} <- OnsagerCore.vnode_modules(), do: vmod)
@@ -1425,11 +1483,11 @@ defmodule OnsagerCore.Ring do
     %{cstate | next: next_2, vclock: vclock_2}
   end
 
-  defp get_members(members) do
+  def get_members(members) do
     get_members(members, [:joining, :valid, :leaving, :exiting, :down])
   end
 
-  defp get_members(members, types) do
+  def get_members(members, types) do
     for {node, {v, _, _}} <- members, Enum.member?(types, v), do: node
   end
 
@@ -1438,8 +1496,70 @@ defmodule OnsagerCore.Ring do
     %{state | seen: seen_2}
   end
 
-  # equal_cstate
-  # equal_members
-  # equal_seen
-  # filtered_seen
+  def equal_cstate(state_a, state_b) do
+    equal_cstate(state_a, state_b, false)
+  end
+
+  def equal_cstate(state_a, state_b, false) do
+    t1 = equal_members(state_a.members, state_b.members)
+    t2 = VC.equal(state_a.rvsn, state_b.rvsn)
+    t3 = equal_seen(state_a, state_b)
+    t4 = equal_rings(state_a, state_b)
+
+    state_a2 = %{
+      state_a
+      | nodename: :undefined,
+        members: :undefined,
+        vclock: :undefined,
+        rvsn: :undefined,
+        seen: :undefined,
+        chring: :undefined,
+        meta: :undefined,
+        clustername: :undefined
+    }
+
+    state_b2 = %{
+      state_b
+      | nodename: :undefined,
+        members: :undefined,
+        vclock: :undefined,
+        rvsn: :undefined,
+        seen: :undefined,
+        chring: :undefined,
+        meta: :undefined,
+        clustername: :undefined
+    }
+
+    t5 = state_a2 === state_b2
+    t1 and t2 and t3 and t4 and t5
+  end
+
+  def equal_members(m1, m2) do
+    l =
+      :orddict.merge(
+        fn _, {status1, vc1, meta1}, {status2, vc2, meta2} ->
+          status1 === status2 and VC.equal(vc1, vc2) and meta1 === meta2
+        end,
+        m1,
+        m2
+      )
+
+    {_, r} = Enum.unzip(l)
+    Enum.all?(r, fn x -> x === true end)
+  end
+
+  def equal_seen(state_a, state_b) do
+    seen_1 = filtered_seen(state_a)
+    seen_2 = filtered_seen(state_b)
+    l = :orddict.merge(fn _, vc1, vc2 -> VC.equal(vc1, vc2) end, seen_1, seen_2)
+    {_, r} = Enum.unzip(l)
+    Enum.all?(r, fn x -> x === true end)
+  end
+
+  def filtered_seen(state = %CHState{seen: seen}) do
+    case get_members(state.members) do
+      [] -> seen
+      members -> :orddict.filter(fn n, _ -> Enum.member?(members, n) end, seen)
+    end
+  end
 end
