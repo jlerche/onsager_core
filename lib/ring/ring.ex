@@ -1440,31 +1440,241 @@ defmodule OnsagerCore.Ring do
         {seen_changed, %{state_3 | vclock: vc3}}
 
       {_, true, true} ->
-        # TODO
-        {}
+        # Exceptional condition that should only occur during rolling upgrades
+        # and manual setting of the ring
+        # merge as divergent case
+        state_4 = reconcile_divergent(vnode, state_3, other_state_3)
+        {true, %{state_4 | nodename: vnode}}
 
       {_, false, false} ->
-        # TODO
-        {}
+        # unable to reconcile based on vector clock, merge rings
+        state_4 = reconcile_divergent(vnode, state_3, other_state_3)
+        {true, %{state_4 | nodename: vnode}}
     end
   end
 
   def reconcile_divergent(vnode, state_a, state_b) do
     vclock = VC.increment(vnode, VC.merge([state_a.vclock, state_b.vclock]))
+    members = reconcile_members(state_a, state_b)
+    meta = merge_meta({state_a.nodename, state_a.meta}, {state_b.nodename.state_b.meta})
+    new_state = reconcile_ring(state_a, state_b, get_members(members))
+    new_state_1 = %{new_state | vclock: vclock, members: members, meta: meta}
+    log_ring_result(new_state_1)
+    new_state_1
   end
 
-  # reconcile_members
+  @doc """
+  Merge two members list using status vector clocks when possible,
+  falling back to manual merge for divergent cases
+  """
+  def reconcile_members(state_a, state_b) do
+    :orddict.merge(
+      fn _k, {valid_1, vc_1, meta_1}, {valid_2, vc_2, meta_2} ->
+        new_1 = VC.descends(vc_1, vc_2)
+        new_2 = VC.descends(vc_2, vc_1)
+        merge_vc = VC.merge([vc_1, vc_2])
+
+        case {new_1, new_2} do
+          {true, false} ->
+            merge_meta = :lists.ukeysort(1, meta_1 ++ meta_2)
+            {valid_1, merge_vc, merge_meta}
+
+          {false, true} ->
+            merge_meta = :lists.ukeysort(1, meta_2 ++ meta_1)
+            {valid_2, merge_vc, merge_meta}
+
+          {_, _} ->
+            merge_meta = :lists.ukeysort(1, meta_1 ++ meta_2)
+            {merge_status(valid_1, valid_2), merge_vc, merge_meta}
+        end
+      end,
+      state_a.members,
+      state_b.members
+    )
+  end
 
   def reconcile_seen(state_a, state_b) do
     :orddict.merge(fn _, vc1, vc2 -> VC.merge([vc1, vc2]) end, state_a.seen, state_b.seen)
   end
 
-  # merge_next_status
-  # reconcile_next
-  # reconcile_divergent_next
-  # substitute
-  # reconcile_ring
-  # merge_status x10
+  def merge_next_status(:complete, _) do
+    :complete
+  end
+
+  def merge_next_status(_, :complete) do
+    :complete
+  end
+
+  def merge_next_status(:awaiting, :awaiting) do
+    :awaiting
+  end
+
+  def reconcile_next(next_1, next_2) do
+    :lists.zipwith(
+      fn {idx, owner, node, transfers_1, status_1}, {idx, owner, node, transfers_2, status_2} ->
+        {idx, owner, node, :ordsets.union(transfers_1, transfers_2),
+         merge_next_status(status_1, status_2)}
+      end,
+      next_1,
+      next_2
+    )
+  end
+
+  def reconcile_divergent_next(base_next, other_next) do
+    merged_next = substitute(0, base_next, other_next)
+
+    :lists.zipwith(
+      fn t1 = {idx, owner_1, node_1, transfers_1, status_1},
+         {idx, owner_2, node_2, transfers_2, status_2} ->
+        same = {owner_1, node_1} === {owner_2, node_2}
+
+        case {same, status_1, status_2} do
+          {false, _, _} ->
+            t1
+
+          _ ->
+            {idx, owner_1, node_1, :ordsets.union(transfers_1, transfers_2),
+             merge_next_status(status_1, status_2)}
+        end
+      end,
+      base_next,
+      merged_next
+    )
+  end
+
+  def substitute(idx, tl1, tl2) do
+    Enum.map(tl1, fn t ->
+      key = elem(t, idx)
+
+      case List.keyfind(tl2, key, idx) do
+        false -> t
+        t2 -> t2
+      end
+    end)
+  end
+
+  def reconcile_ring(
+        state_a = %CHState{claimant: claimant_1, rvsn: vc_1, next: next_1},
+        state_b = %CHState{claimant: claimant_2, rvsn: vc_2, next: next_2},
+        members
+      ) do
+    v1_newer = VC.descends(vc_1, vc_2)
+    v2_newer = VC.descends(vc_2, vc_1)
+    equal_vc = VC.equal(vc_1, vc_2) && claimant_1 === claimant_2
+
+    case {equal_vc, v1_newer, v2_newer} do
+      {true, _, _} ->
+        next = reconcile_next(next_1, next_2)
+        %{state_a | next: next}
+
+      {_, true, false} ->
+        next = reconcile_divergent_next(next_1, next_2)
+        %{state_a | next: next}
+
+      {_, false, true} ->
+        next = reconcile_divergent_next(next_2, next_1)
+        %{state_b | next: next}
+
+      {_, _, _} ->
+        # Ring versions were divergent, so fall back to reconciling based
+        # on claimant. Under normal operation, divergent ring versions
+        # should only occur if there are two different claimants, and one
+        # claimant is invalid. For example, when a claimant is removed and
+        # a new claimant has just taken over. We therefore chose the ring
+        # with the valid claimant.
+        cvalid_1 = Enum.member?(members, claimant_1)
+        cvalid_2 = Enum.member?(members, claimant_2)
+
+        case {cvalid_1, cvalid_2} do
+          {true, false} ->
+            next = reconcile_divergent_next(next_1, next_2)
+            %{state_a | next: next}
+
+          {false, true} ->
+            next = reconcile_divergent_next(next_2, next_1)
+            %{state_b | next: next}
+
+          {false, false} ->
+            # This can accour when removed/down nodes are still up and gossip
+            # to each other. We need to pick a claimant in this case, but
+            # choice is irrelevant as a proper claimant will be chosen when
+            # ring converges
+            case claimant_1 < claimant_2 do
+              true ->
+                next = reconcile_divergent_next(next_1, next_2)
+                %{state_a | next: next}
+
+              false ->
+                next = reconcile_divergent_next(next_2, next_1)
+                %{state_b | next: next}
+            end
+
+          {true, true} ->
+            # Should not happen in normal practice, but handle anyway
+            case claimant_1 < claimant_2 do
+              true ->
+                next = reconcile_divergent_next(next_1, next_2)
+                %{state_a | next: next}
+
+              false ->
+                next = reconcile_divergent_next(next_2, next_1)
+                %{state_b | next: next}
+            end
+        end
+    end
+  end
+
+  def merge_status(:invalid, _) do
+    :invalid
+  end
+
+  def merge_status(_, :invalid) do
+    :invalid
+  end
+
+  def merge_status(:down, _) do
+    :down
+  end
+
+  def merge_status(_, :down) do
+    :down
+  end
+
+  def merge_status(:joining, _) do
+    :joining
+  end
+
+  def merge_status(_, :joining) do
+    :joining
+  end
+
+  def merge_status(:valid, _) do
+    :valid
+  end
+
+  def merge_status(_, :valid) do
+    :valid
+  end
+
+  def merge_status(:exiting, _) do
+    :exiting
+  end
+
+  def merge_status(_, :exiting) do
+    :exiting
+  end
+
+  def merge_status(:leaving, _) do
+    :leaving
+  end
+
+  def merge_status(_, :leaving) do
+    :leaving
+  end
+
+  def merge_status(_, _) do
+    :invalid
+  end
 
   def transfer_complete(cstate = %CHState{next: next, vclock: vclock}, idx, mod) do
     {idx, owner, next_owner, transfers, status} = List.keyfind(next, idx, 0)
