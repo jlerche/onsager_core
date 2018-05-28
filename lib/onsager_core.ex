@@ -47,7 +47,7 @@ defmodule OnsagerCore do
     end
   end
 
-  defp get_other_ring(node) do
+  def get_other_ring(node) do
     Util.safe_rpc(node, :onsager_core_ring_manager, :get_raw_ring, [])
   end
 
@@ -64,13 +64,6 @@ defmodule OnsagerCore do
     end
   end
 
-  def vnode_modules() do
-    case Application.get_env(:onsager_core, :vnode_modules) do
-      :undefined -> []
-      {:ok, mods} -> mods
-    end
-  end
-
   defp init_complete({:started, _}) do
     true
   end
@@ -82,5 +75,52 @@ defmodule OnsagerCore do
   def standard_join(node, ring, rejoin, auto) do
     {:ok, my_ring} = Ring.Manager.get_raw_ring()
     init_complete = init_complete(:init.get_status())
+    same_size = Ring.num_partitions(my_ring) === Ring.num_partitions(ring)
+    singleton = [node()] === Ring.all_members(my_ring)
   end
+
+  # maybe_auto_join
+  # maybe_auto_join
+  # remove
+  # standard_remove
+  # down
+  # leave
+  # standard_leave
+  # remove_from_cluster
+
+  def vnode_modules() do
+    case Application.get_env(:onsager_core, :vnode_modules) do
+      :undefined -> []
+      {:ok, mods} -> mods
+    end
+  end
+
+  # bucket_fixups
+  # bucket_validators
+  # stat_mods
+  # health_check
+  # get_app
+  # register
+  # register
+  # register
+  # register
+  # register
+  # register
+  # register
+  # register
+  # register
+  # register
+  # register_mod
+  # register_metadata
+  # register_proplist
+  # add_guarded_event_handler
+  # add_guarded_event_handler
+  # delete_guarded_event_handler
+  # app_for_module
+  # app_for_module
+  # app_for_module
+  # wait_for_application
+  # wait_for_application
+  # wait_for_service
+  # wait_for_service
 end
