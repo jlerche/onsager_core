@@ -30,7 +30,7 @@ defmodule OnsagerCore.Mochiglobal do
         end
       end
 
-    Module.create(module, contents, Macro.Env.location(__ENV__))
+    Module.create(module, contents, %Macro.Env{})
     :ok
   end
 
