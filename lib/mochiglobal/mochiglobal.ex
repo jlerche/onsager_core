@@ -21,7 +21,8 @@ defmodule OnsagerCore.Mochiglobal do
   end
 
   def put(_key, val, module) do
-    :code.purge(module)
+    delete(module)
+    val = Macro.escape(val)
 
     contents =
       quote do
@@ -30,7 +31,7 @@ defmodule OnsagerCore.Mochiglobal do
         end
       end
 
-    Module.create(module, contents, %Macro.Env{})
+    Module.create(module, contents, __ENV__)
     :ok
   end
 
