@@ -1,6 +1,4 @@
 defmodule OnsagerCore.Mochiglobal do
-  require OnsagerCore.Mochiglobal.Macros
-
   def get(key) do
     get(key, :undefined)
   end
